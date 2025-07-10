@@ -1,0 +1,51 @@
+#!/bin/bash
+
+echo "----------------------------------------"
+echo "🚀 Starting Docker Installation Script"
+echo "----------------------------------------"
+
+# Step 1: Kill any processes locking apt
+echo "🔍 Checking for apt locks..."
+sudo kill -9 $(lsof /var/lib/dpkg/lock-frontend | awk 'NR>1 {print $2}') 2>/dev/null
+sudo kill -9 $(lsof /var/lib/dpkg/lock | awk 'NR>1 {print $2}') 2>/dev/null
+sudo rm -f /var/lib/dpkg/lock-frontend
+sudo rm -f /var/lib/dpkg/lock
+sudo dpkg --configure -a
+
+# Step 2: Clean up invalid Kubernetes repo if exists
+KUBE_REPO="/etc/apt/sources.list.d/kubernetes.list"
+if [ -f "$KUBE_REPO" ]; then
+    echo "🧹 Removing invalid Kubernetes repo..."
+    sudo rm "$KUBE_REPO"
+fi
+
+# Step 3: Install prerequisites
+echo "📦 Installing prerequisites..."
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl gnupg lsb-release
+
+# Step 4: Setup Docker GPG key
+echo "🔑 Adding Docker GPG key..."
+sudo mkdir -p /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
+    sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+
+# Step 5: Add Docker APT repository
+echo "➕ Adding Docker APT repository..."
+echo \
+"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | \
+sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# Step 6: Update and install Docker
+echo "⬇️ Installing Docker Engine..."
+sudo apt-get update
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io
+
+# Step 7: Test Docker
+echo "✅ Verifying Docker installation..."
+sudo docker --version && echo "🎉 Docker installed successfully!" || echo "❌ Docker install failed."
+
+echo "----------------------------------------"
+echo "✅ Script finished!"
+echo "----------------------------------------"
