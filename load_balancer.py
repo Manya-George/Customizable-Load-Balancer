@@ -1,21 +1,32 @@
 from flask import Flask, jsonify, request
+from consistent_hash import ConsistentHashMap
 import threading
 import time
 import requests
+import random
 
 app = Flask(__name__)
 
-# All known servers (including ones that may be temporarily down)
+# Load balancer settings
 ALL_KNOWN_SERVERS = [
     "http://server1:5000",
     "http://server2:5000",
     "http://server3:5000"
 ]
-
-# Active, healthy servers used by the load balancer
 BACKEND_SERVERS = ALL_KNOWN_SERVERS.copy()
-current_server_index = 0
 HEALTH_CHECK_INTERVAL = 5  # seconds
+
+# Initialize consistent hash map
+hash_map = ConsistentHashMap(num_slots=512, num_virtuals=9)
+
+# Helper: extract numeric ID from server URL
+def extract_server_id(url):
+    try:
+        return int(url.replace("http://server", "").replace(":5000", ""))
+    except:
+        return None
+
+# Flask routes
 
 @app.route('/')
 def root():
@@ -23,16 +34,16 @@ def root():
 
 @app.route('/home', methods=['GET'])
 def forward_home():
-    global current_server_index
-
     if not BACKEND_SERVERS:
         return jsonify({"error": "No backend servers available"}), 503
 
-    server_url = BACKEND_SERVERS[current_server_index]
-    current_server_index = (current_server_index + 1) % len(BACKEND_SERVERS)
+    # Use consistent hashing to pick server
+    request_id = random.randint(1, 100000)
+    server_id = hash_map.get_server(request_id)
+    server_url = f"http://server{server_id}:5000"
 
     try:
-        response = requests.get(f"{server_url}/home")
+        response = requests.get(f"{server_url}/home", timeout=2)
         return jsonify(response.json()), response.status_code
     except requests.exceptions.RequestException as e:
         return jsonify({"error": f"Failed to reach {server_url}", "details": str(e)}), 500
@@ -53,11 +64,8 @@ def replicas():
 def add_replicas():
     data = request.get_json()
     instances = data.get("instances", [])
-
-    if not instances:
-        return jsonify({"error": "No instances provided"}), 400
-
     added = []
+
     for name in instances:
         url = f"http://{name}:5000"
         if url not in ALL_KNOWN_SERVERS:
@@ -74,11 +82,8 @@ def add_replicas():
 def remove_replicas():
     data = request.get_json()
     instances = data.get("instances", [])
-
-    if not instances:
-        return jsonify({"error": "No instances provided"}), 400
-
     removed = []
+
     for name in instances:
         url = f"http://{name}:5000"
         if url in ALL_KNOWN_SERVERS:
@@ -93,24 +98,22 @@ def remove_replicas():
 
 @app.route('/<path:path>', methods=['GET'])
 def fallback_proxy(path):
-    global current_server_index
-
     if not BACKEND_SERVERS:
         return jsonify({"error": "No backend servers available"}), 503
 
-    server_url = BACKEND_SERVERS[current_server_index]
-    current_server_index = (current_server_index + 1) % len(BACKEND_SERVERS)
+    request_id = random.randint(1, 100000)
+    server_id = hash_map.get_server(request_id)
+    server_url = f"http://server{server_id}:5000"
 
     try:
-        response = requests.get(f"{server_url}/{path}")
+        response = requests.get(f"{server_url}/{path}", timeout=2)
         return jsonify(response.json()), response.status_code
     except requests.exceptions.RequestException as e:
         return jsonify({"error": f"Failed to reach {server_url}/{path}", "details": str(e)}), 500
 
-# Health check loop with automatic recovery
+# Background thread to check server health and update hash ring
 def health_check_loop():
     global BACKEND_SERVERS
-
     while True:
         healthy_servers = []
         for url in ALL_KNOWN_SERVERS:
@@ -119,16 +122,31 @@ def health_check_loop():
                 if resp.status_code == 200:
                     healthy_servers.append(url)
             except requests.exceptions.RequestException:
-                pass  # server down
+                continue
 
+        # Only update if there are changes
         if set(healthy_servers) != set(BACKEND_SERVERS):
-            print("Updated healthy servers:", healthy_servers)
+            print("[INFO] Updated healthy servers:", healthy_servers)
 
-        BACKEND_SERVERS = healthy_servers
+            # Remove old servers from hash ring
+            for url in BACKEND_SERVERS:
+                sid = extract_server_id(url)
+                if sid:
+                    hash_map.remove_server(sid)
+
+            # Add new servers to hash ring
+            for url in healthy_servers:
+                sid = extract_server_id(url)
+                if sid:
+                    hash_map.add_server(sid)
+
+            BACKEND_SERVERS = healthy_servers
+
         time.sleep(HEALTH_CHECK_INTERVAL)
 
-# Start health check thread
+# Start background health check
 threading.Thread(target=health_check_loop, daemon=True).start()
 
+# Start Flask app
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
