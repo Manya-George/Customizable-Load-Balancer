@@ -2,6 +2,7 @@ import aiohttp
 import asyncio
 from collections import Counter
 import time
+import matplotlib.pyplot as plt
 
 TOTAL_REQUESTS = 10000
 MAX_CONCURRENT = 100
@@ -31,7 +32,10 @@ async def test_n_servers(n):
 
         total_handled = 0
         print(f"--- Result for N={n} ---")
-        for sid in SERVER_IDS[:n]:
+        servers = SERVER_IDS[:n]
+        server_counts = []
+
+        for sid in servers:
             handled = counts.get(sid, 0)
             total_handled += handled
             print(f"{sid}: {handled} requests")
@@ -39,6 +43,16 @@ async def test_n_servers(n):
         errors = counts.get("Error", 0)
         print(f"Errors: {errors}")
         print(f"Average per server: {total_handled // n} requests\n")
+
+    plt.figure(figsize=(8, 4))
+    plt.bar(servers, server_counts, color='lightgreen')
+    plt.title(f"Request Distribution for {n} Servers")
+    plt.xlabel("Servers")
+    plt.ylabel("Requests")
+    plt.xticks(rotation=15)
+    plt.tight_layout()
+    plt.savefig("scalability_chart.png")
+    print("Chart saved as scalability_chart,.png")
 
 async def main():
     print("Waiting 10 seconds for services to be ready...")
